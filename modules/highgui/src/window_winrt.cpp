@@ -33,7 +33,7 @@
 #include <assert.h>
 #include <opencv2\highgui.hpp>
 #include <opencv2\highgui\highgui_winrt.hpp>
-#include <window_winrt_bridge.hpp>
+#include "window_winrt_bridge.hpp"
 
 #define CV_WINRT_NO_GUI_ERROR( funcname )       \
 {                                               \
@@ -167,6 +167,22 @@ CV_IMPL void cvSetTrackbarMax(const char* trackbar_name, const char* window_name
 
         if (trackbar)
             trackbar->setMaxPosition(maxval);
+    }
+}
+
+CV_IMPL void cvSetTrackbarMin(const char* trackbar_name, const char* window_name, int minval)
+{
+    CV_FUNCNAME("cvSetTrackbarMin");
+
+    if (minval >= 0)
+    {
+        if (trackbar_name == 0 || window_name == 0)
+            CV_ERROR(CV_StsNullPtr, "NULL trackbar or window name");
+
+        CvTrackbar* trackbar = HighguiBridge::getInstance().findTrackbarByName(trackbar_name, window_name);
+
+        if (trackbar)
+            trackbar->setMinPosition(minval);
     }
 }
 

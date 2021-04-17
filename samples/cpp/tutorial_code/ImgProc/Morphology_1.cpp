@@ -4,13 +4,12 @@
  * @author OpenCV team
  */
 
-#include "opencv2/imgproc/imgproc.hpp"
-#include "opencv2/imgcodecs.hpp"
-#include "opencv2/highgui/highgui.hpp"
-#include <stdlib.h>
-#include <stdio.h>
+#include "opencv2/imgproc.hpp"
+#include "opencv2/highgui.hpp"
+#include <iostream>
 
 using namespace cv;
+using namespace std;
 
 /// Global variables
 Mat src, erosion_dst, dilation_dst;
@@ -26,16 +25,21 @@ int const max_kernel_size = 21;
 void Erosion( int, void* );
 void Dilation( int, void* );
 
+//![main]
 /**
  * @function main
  */
-int main( int, char** argv )
+int main( int argc, char** argv )
 {
   /// Load an image
-  src = imread( argv[1] );
-
+  CommandLineParser parser( argc, argv, "{@input | LinuxLogo.jpg | input image}" );
+  src = imread( samples::findFile( parser.get<String>( "@input" ) ), IMREAD_COLOR );
   if( src.empty() )
-    { return -1; }
+  {
+    cout << "Could not open or find the image!\n" << endl;
+    cout << "Usage: " << argv[0] << " <Input image>" << endl;
+    return -1;
+  }
 
   /// Create windows
   namedWindow( "Erosion Demo", WINDOW_AUTOSIZE );
@@ -67,7 +71,9 @@ int main( int, char** argv )
   waitKey(0);
   return 0;
 }
+//![main]
 
+//![erosion]
 /**
  * @function Erosion
  */
@@ -78,14 +84,19 @@ void Erosion( int, void* )
   else if( erosion_elem == 1 ){ erosion_type = MORPH_CROSS; }
   else if( erosion_elem == 2) { erosion_type = MORPH_ELLIPSE; }
 
+  //![kernel]
   Mat element = getStructuringElement( erosion_type,
                        Size( 2*erosion_size + 1, 2*erosion_size+1 ),
                        Point( erosion_size, erosion_size ) );
+  //![kernel]
+
   /// Apply the erosion operation
   erode( src, erosion_dst, element );
   imshow( "Erosion Demo", erosion_dst );
 }
+//![erosion]
 
+//![dilation]
 /**
  * @function Dilation
  */
@@ -99,7 +110,9 @@ void Dilation( int, void* )
   Mat element = getStructuringElement( dilation_type,
                        Size( 2*dilation_size + 1, 2*dilation_size+1 ),
                        Point( dilation_size, dilation_size ) );
+
   /// Apply the dilation operation
   dilate( src, dilation_dst, element );
   imshow( "Dilation Demo", dilation_dst );
 }
+//![dilation]

@@ -10,7 +10,7 @@
 #ifdef HAVE_VA
 #  include <va/va.h>
 #else  // HAVE_VA
-#  define NO_VA_SUPPORT_ERROR CV_ErrorNoReturn(cv::Error::StsBadFunc, "OpenCV was build without VA support (libva)")
+#  define NO_VA_SUPPORT_ERROR CV_Error(cv::Error::StsBadFunc, "OpenCV was build without VA support (libva)")
 #endif // HAVE_VA
 
 using namespace cv;
@@ -25,13 +25,28 @@ using namespace cv;
 #  include "opencl_kernels_core.hpp"
 #endif // HAVE_OPENCL
 
-#if defined(HAVE_VA_INTEL) && defined(HAVE_OPENCL)
+#ifdef HAVE_VA_INTEL
+#ifdef HAVE_VA_INTEL_OLD_HEADER
 #  include <CL/va_ext.h>
-#endif // HAVE_VA_INTEL && HAVE_OPENCL
+#else
+#  include <CL/cl_va_api_media_sharing_intel.h>
+#endif
+#endif
+
+#ifdef HAVE_VA
+#ifndef OPENCV_LIBVA_LINK
+#include "va_wrapper.impl.hpp"
+#else
+namespace cv { namespace detail {
+static void init_libva() { /* nothing */ }
+}}  // namespace
+#endif
+using namespace cv::detail;
+#endif
 
 namespace cv { namespace va_intel {
 
-#if defined(HAVE_VA_INTEL) && defined(HAVE_OPENCL)
+#ifdef HAVE_VA_INTEL
 
 static clGetDeviceIDsFromVA_APIMediaAdapterINTEL_fn clGetDeviceIDsFromVA_APIMediaAdapterINTEL = NULL;
 static clCreateFromVA_APIMediaSurfaceINTEL_fn       clCreateFromVA_APIMediaSurfaceINTEL       = NULL;
@@ -40,17 +55,19 @@ static clEnqueueReleaseVA_APIMediaSurfacesINTEL_fn  clEnqueueReleaseVA_APIMediaS
 
 static bool contextInitialized = false;
 
-#endif // HAVE_VA_INTEL && HAVE_OPENCL
+#endif // HAVE_VA_INTEL
 
 namespace ocl {
 
 Context& initializeContextFromVA(VADisplay display, bool tryInterop)
 {
-    (void)display; (void)tryInterop;
+    CV_UNUSED(display); CV_UNUSED(tryInterop);
 #if !defined(HAVE_VA)
     NO_VA_SUPPORT_ERROR;
 #else  // !HAVE_VA
-# if (defined(HAVE_VA_INTEL) && defined(HAVE_OPENCL))
+    init_libva();
+
+#   ifdef HAVE_VA_INTEL
     contextInitialized = false;
     if (tryInterop)
     {
@@ -106,7 +123,7 @@ Context& initializeContextFromVA(VADisplay display, bool tryInterop)
                                                                CL_PREFERRED_DEVICES_FOR_VA_API_INTEL, 0, NULL, &numDevices);
             if ((status != CL_SUCCESS) || !(numDevices > 0))
                 continue;
-            numDevices = 1; // initializeContextFromHandle() expects only 1 device
+            numDevices = 1; // OpenCV expects only 1 device
             status = clGetDeviceIDsFromVA_APIMediaAdapterINTEL(platforms[i], CL_VA_API_DISPLAY_INTEL, display,
                                                                CL_PREFERRED_DEVICES_FOR_VA_API_INTEL, numDevices, &device, NULL);
             if (status != CL_SUCCESS)
@@ -135,12 +152,26 @@ Context& initializeContextFromVA(VADisplay display, bool tryInterop)
         if (found >= 0)
         {
             contextInitialized = true;
-            Context& ctx = Context::getDefault(false);
-            initializeContextFromHandle(ctx, platforms[found], context, device);
-            return ctx;
+
+            cl_platform_id platform = platforms[found];
+            std::string platformName = PlatformInfo(&platform).name();
+
+            OpenCLExecutionContext clExecCtx;
+            try
+            {
+                clExecCtx = OpenCLExecutionContext::create(platformName, platform, context, device);
+            }
+            catch (...)
+            {
+                clReleaseDevice(device);
+                clReleaseContext(context);
+                throw;
+            }
+            clExecCtx.bind();
+            return const_cast<Context&>(clExecCtx.getContext());
         }
     }
-# endif // HAVE_VA_INTEL && HAVE_OPENCL
+# endif // HAVE_VA_INTEL
     {
         Context& ctx = Context::getDefault(true);
         return ctx;
@@ -148,7 +179,7 @@ Context& initializeContextFromVA(VADisplay display, bool tryInterop)
 #endif  // !HAVE_VA
 }
 
-#if defined(HAVE_VA_INTEL) && defined(HAVE_OPENCL)
+#ifdef HAVE_VA_INTEL
 static bool ocl_convert_nv12_to_bgr(cl_mem clImageY, cl_mem clImageUV, cl_mem clBuffer, int step, int cols, int rows)
 {
     ocl::Kernel k;
@@ -158,7 +189,7 @@ static bool ocl_convert_nv12_to_bgr(cl_mem clImageY, cl_mem clImageUV, cl_mem cl
 
     k.args(clImageY, clImageUV, clBuffer, step, cols, rows);
 
-    size_t globalsize[] = { cols, rows };
+    size_t globalsize[] = { (size_t)cols/2, (size_t)rows/2 };
     return k.run(2, globalsize, 0, false);
 }
 
@@ -171,10 +202,10 @@ static bool ocl_convert_bgr_to_nv12(cl_mem clBuffer, int step, int cols, int row
 
     k.args(clBuffer, step, cols, rows, clImageY, clImageUV);
 
-    size_t globalsize[] = { cols, rows };
+    size_t globalsize[] = { (size_t)cols/2, (size_t)rows/2 };
     return k.run(2, globalsize, 0, false);
 }
-#endif // HAVE_VA_INTEL && HAVE_OPENCL
+#endif // HAVE_VA_INTEL
 
 } // namespace cv::va_intel::ocl
 
@@ -324,14 +355,173 @@ static void copy_convert_bgr_to_nv12(const VAImage& image, const Mat& bgr, unsig
         dstUV += dstStepUV;
     }
 }
+
+
+static void copy_convert_yv12_to_bgr(const VAImage& image, const unsigned char* buffer, Mat& bgr)
+{
+    const float d1 = 16.0f;
+    const float d2 = 128.0f;
+
+    static const float coeffs[5] =
+        {
+            1.163999557f,
+            2.017999649f,
+            -0.390999794f,
+            -0.812999725f,
+            1.5959997177f
+        };
+
+    CV_CheckEQ((size_t)image.format.fourcc, (size_t)VA_FOURCC_YV12, "Unexpected image format");
+    CV_CheckEQ((size_t)image.num_planes, (size_t)3, "");
+
+    const size_t srcOffsetY = image.offsets[0];
+    const size_t srcOffsetV = image.offsets[1];
+    const size_t srcOffsetU = image.offsets[2];
+
+    const size_t srcStepY = image.pitches[0];
+    const size_t srcStepU = image.pitches[1];
+    const size_t srcStepV = image.pitches[2];
+
+    const size_t dstStep = bgr.step;
+
+    const unsigned char* srcY_ = buffer + srcOffsetY;
+    const unsigned char* srcV_ = buffer + srcOffsetV;
+    const unsigned char* srcU_ = buffer + srcOffsetU;
+
+    for (int y = 0; y < bgr.rows; y += 2)
+    {
+        const unsigned char* srcY0 = srcY_ + (srcStepY) * y;
+        const unsigned char* srcY1 = srcY0 + srcStepY;
+
+        const unsigned char* srcV = srcV_ + (srcStepV) * y / 2;
+        const unsigned char* srcU = srcU_ + (srcStepU) * y / 2;
+
+        unsigned char* dst0 = bgr.data + (dstStep) * y;
+        unsigned char* dst1 = dst0 + dstStep;
+
+        for (int x = 0; x < bgr.cols; x += 2)
+        {
+            float Y0 = float(srcY0[x+0]);
+            float Y1 = float(srcY0[x+1]);
+            float Y2 = float(srcY1[x+0]);
+            float Y3 = float(srcY1[x+1]);
+
+            float U = float(srcU[x/2]) - d2;
+            float V = float(srcV[x/2]) - d2;
+
+            Y0 = std::max(0.0f, Y0 - d1) * coeffs[0];
+            Y1 = std::max(0.0f, Y1 - d1) * coeffs[0];
+            Y2 = std::max(0.0f, Y2 - d1) * coeffs[0];
+            Y3 = std::max(0.0f, Y3 - d1) * coeffs[0];
+
+            float ruv = coeffs[4]*V;
+            float guv = coeffs[3]*V + coeffs[2]*U;
+            float buv = coeffs[1]*U;
+
+            dst0[(x+0)*NCHANNELS+0] = saturate_cast<unsigned char>(Y0 + buv);
+            dst0[(x+0)*NCHANNELS+1] = saturate_cast<unsigned char>(Y0 + guv);
+            dst0[(x+0)*NCHANNELS+2] = saturate_cast<unsigned char>(Y0 + ruv);
+
+            dst0[(x+1)*NCHANNELS+0] = saturate_cast<unsigned char>(Y1 + buv);
+            dst0[(x+1)*NCHANNELS+1] = saturate_cast<unsigned char>(Y1 + guv);
+            dst0[(x+1)*NCHANNELS+2] = saturate_cast<unsigned char>(Y1 + ruv);
+
+            dst1[(x+0)*NCHANNELS+0] = saturate_cast<unsigned char>(Y2 + buv);
+            dst1[(x+0)*NCHANNELS+1] = saturate_cast<unsigned char>(Y2 + guv);
+            dst1[(x+0)*NCHANNELS+2] = saturate_cast<unsigned char>(Y2 + ruv);
+
+            dst1[(x+1)*NCHANNELS+0] = saturate_cast<unsigned char>(Y3 + buv);
+            dst1[(x+1)*NCHANNELS+1] = saturate_cast<unsigned char>(Y3 + guv);
+            dst1[(x+1)*NCHANNELS+2] = saturate_cast<unsigned char>(Y3 + ruv);
+        }
+    }
+}
+
+static void copy_convert_bgr_to_yv12(const VAImage& image, const Mat& bgr, unsigned char* buffer)
+{
+    const float d1 = 16.0f;
+    const float d2 = 128.0f;
+
+    static const float coeffs[8] =
+        {
+            0.256999969f,  0.50399971f,   0.09799957f,   -0.1479988098f,
+            -0.2909994125f, 0.438999176f, -0.3679990768f, -0.0709991455f
+        };
+
+    CV_CheckEQ((size_t)image.format.fourcc, (size_t)VA_FOURCC_YV12, "Unexpected image format");
+    CV_CheckEQ((size_t)image.num_planes, (size_t)3, "");
+
+    const size_t dstOffsetY = image.offsets[0];
+    const size_t dstOffsetV = image.offsets[1];
+    const size_t dstOffsetU = image.offsets[2];
+
+    const size_t dstStepY = image.pitches[0];
+    const size_t dstStepU = image.pitches[1];
+    const size_t dstStepV = image.pitches[2];
+
+    unsigned char* dstY_ = buffer + dstOffsetY;
+    unsigned char* dstV_ = buffer + dstOffsetV;
+    unsigned char* dstU_ = buffer + dstOffsetU;
+
+    const size_t srcStep = bgr.step;
+
+    for (int y = 0; y < bgr.rows; y += 2)
+    {
+        unsigned char* dstY0 = dstY_ + (dstStepY) * y;
+        unsigned char* dstY1 = dstY0 + dstStepY;
+
+        unsigned char* dstV = dstV_ + (dstStepV) * y / 2;
+        unsigned char* dstU = dstU_ + (dstStepU) * y / 2;
+
+        const unsigned char* src0 = bgr.data + (srcStep) * y;
+        const unsigned char* src1 = src0 + srcStep;
+
+        for (int x = 0; x < bgr.cols; x += 2)
+        {
+            float B0 = float(src0[(x+0)*NCHANNELS+0]);
+            float G0 = float(src0[(x+0)*NCHANNELS+1]);
+            float R0 = float(src0[(x+0)*NCHANNELS+2]);
+
+            float B1 = float(src0[(x+1)*NCHANNELS+0]);
+            float G1 = float(src0[(x+1)*NCHANNELS+1]);
+            float R1 = float(src0[(x+1)*NCHANNELS+2]);
+
+            float B2 = float(src1[(x+0)*NCHANNELS+0]);
+            float G2 = float(src1[(x+0)*NCHANNELS+1]);
+            float R2 = float(src1[(x+0)*NCHANNELS+2]);
+
+            float B3 = float(src1[(x+1)*NCHANNELS+0]);
+            float G3 = float(src1[(x+1)*NCHANNELS+1]);
+            float R3 = float(src1[(x+1)*NCHANNELS+2]);
+
+            float Y0 = coeffs[0]*R0 + coeffs[1]*G0 + coeffs[2]*B0 + d1;
+            float Y1 = coeffs[0]*R1 + coeffs[1]*G1 + coeffs[2]*B1 + d1;
+            float Y2 = coeffs[0]*R2 + coeffs[1]*G2 + coeffs[2]*B2 + d1;
+            float Y3 = coeffs[0]*R3 + coeffs[1]*G3 + coeffs[2]*B3 + d1;
+
+            float U = coeffs[3]*R0 + coeffs[4]*G0 + coeffs[5]*B0 + d2;
+            float V = coeffs[5]*R0 + coeffs[6]*G0 + coeffs[7]*B0 + d2;
+
+            dstY0[x+0] = saturate_cast<unsigned char>(Y0);
+            dstY0[x+1] = saturate_cast<unsigned char>(Y1);
+            dstY1[x+0] = saturate_cast<unsigned char>(Y2);
+            dstY1[x+1] = saturate_cast<unsigned char>(Y3);
+
+            dstU[x/2] = saturate_cast<unsigned char>(U);
+            dstV[x/2] = saturate_cast<unsigned char>(V);
+        }
+    }
+}
 #endif // HAVE_VA
 
 void convertToVASurface(VADisplay display, InputArray src, VASurfaceID surface, Size size)
 {
-    (void)display; (void)src; (void)surface; (void)size;
+    CV_UNUSED(display); CV_UNUSED(src); CV_UNUSED(surface); CV_UNUSED(size);
 #if !defined(HAVE_VA)
     NO_VA_SUPPORT_ERROR;
 #else  // !HAVE_VA
+    init_libva();
+
     const int stype = CV_8UC3;
 
     int srcType = src.type();
@@ -340,7 +530,7 @@ void convertToVASurface(VADisplay display, InputArray src, VASurfaceID surface, 
     Size srcSize = src.size();
     CV_Assert(srcSize.width == size.width && srcSize.height == size.height);
 
-# if (defined(HAVE_VA_INTEL) && defined(HAVE_OPENCL))
+#ifdef HAVE_VA_INTEL
     if (contextInitialized)
     {
         UMat u = src.getUMat();
@@ -388,7 +578,7 @@ void convertToVASurface(VADisplay display, InputArray src, VASurfaceID surface, 
             CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clReleaseMem failed (UV plane)");
     }
     else
-# endif // HAVE_VA_INTEL && HAVE_OPENCL
+# endif // HAVE_VA_INTEL
     {
         Mat m = src.getMat();
 
@@ -412,9 +602,12 @@ void convertToVASurface(VADisplay display, InputArray src, VASurfaceID surface, 
         if (status != VA_STATUS_SUCCESS)
             CV_Error(cv::Error::StsError, "VA-API: vaMapBuffer failed");
 
-        CV_Assert(image.format.fourcc == VA_FOURCC_NV12);
-
-        copy_convert_bgr_to_nv12(image, m, buffer);
+        if (image.format.fourcc == VA_FOURCC_NV12)
+            copy_convert_bgr_to_nv12(image, m, buffer);
+        if (image.format.fourcc == VA_FOURCC_YV12)
+            copy_convert_bgr_to_yv12(image, m, buffer);
+        else
+            CV_Check((int)image.format.fourcc, image.format.fourcc == VA_FOURCC_NV12 || image.format.fourcc == VA_FOURCC_YV12, "Unexpected image format");
 
         status = vaUnmapBuffer(display, image.buf);
         if (status != VA_STATUS_SUCCESS)
@@ -429,16 +622,18 @@ void convertToVASurface(VADisplay display, InputArray src, VASurfaceID surface, 
 
 void convertFromVASurface(VADisplay display, VASurfaceID surface, Size size, OutputArray dst)
 {
-    (void)display; (void)surface; (void)dst; (void)size;
+    CV_UNUSED(display); CV_UNUSED(surface); CV_UNUSED(dst); CV_UNUSED(size);
 #if !defined(HAVE_VA)
     NO_VA_SUPPORT_ERROR;
 #else  // !HAVE_VA
+    init_libva();
+
     const int dtype = CV_8UC3;
 
     // TODO Need to specify ACCESS_WRITE here somehow to prevent useless data copying!
     dst.create(size, dtype);
 
-# if (defined(HAVE_VA_INTEL) && defined(HAVE_OPENCL))
+#ifdef HAVE_VA_INTEL
     if (contextInitialized)
     {
         UMat u = dst.getUMat();
@@ -486,7 +681,7 @@ void convertFromVASurface(VADisplay display, VASurfaceID surface, Size size, Out
             CV_Error(cv::Error::OpenCLApiCallError, "OpenCL: clReleaseMem failed (UV plane)");
     }
     else
-# endif // HAVE_VA_INTEL && HAVE_OPENCL
+# endif // HAVE_VA_INTEL
     {
         Mat m = dst.getMat();
 
@@ -510,9 +705,12 @@ void convertFromVASurface(VADisplay display, VASurfaceID surface, Size size, Out
         if (status != VA_STATUS_SUCCESS)
             CV_Error(cv::Error::StsError, "VA-API: vaMapBuffer failed");
 
-        CV_Assert(image.format.fourcc == VA_FOURCC_NV12);
-
-        copy_convert_nv12_to_bgr(image, buffer, m);
+        if (image.format.fourcc == VA_FOURCC_NV12)
+            copy_convert_nv12_to_bgr(image, buffer, m);
+        if (image.format.fourcc == VA_FOURCC_YV12)
+            copy_convert_yv12_to_bgr(image, buffer, m);
+        else
+            CV_Check((int)image.format.fourcc, image.format.fourcc == VA_FOURCC_NV12 || image.format.fourcc == VA_FOURCC_YV12, "Unexpected image format");
 
         status = vaUnmapBuffer(display, image.buf);
         if (status != VA_STATUS_SUCCESS)

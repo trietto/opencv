@@ -1,6 +1,16 @@
 OpenCV iOS - Image Processing {#tutorial_image_manipulation}
 =============================
 
+@tableofcontents
+
+@prev_tutorial{tutorial_hello}
+@next_tutorial{tutorial_video_processing}
+
+|    |    |
+| -: | :- |
+| Original author | Charu Hans |
+| Compatibility | OpenCV >= 3.0 |
+
 Goal
 ----
 
@@ -115,8 +125,4 @@ Output
 Check out an instance of running code with more Image Effects on
 [YouTube](http://www.youtube.com/watch?v=Ko3K_xdhJ1I) .
 
-\htmlonly
-<div align="center">
-<iframe width="560" height="350" src="http://www.youtube.com/embed/Ko3K_xdhJ1I" frameborder="0" allowfullscreen></iframe>
-</div>
-\endhtmlonly
+@youtube{Ko3K_xdhJ1I}

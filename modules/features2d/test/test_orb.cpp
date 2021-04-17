@@ -41,8 +41,7 @@
 
 #include "test_precomp.hpp"
 
-using namespace std;
-using namespace cv;
+namespace opencv_test { namespace {
 
 TEST(Features2D_ORB, _1996)
 {
@@ -90,3 +89,57 @@ TEST(Features2D_ORB, _1996)
 
     ASSERT_EQ(0, roiViolations);
 }
+
+TEST(Features2D_ORB, crash_5031)
+{
+    cv::Mat image = cv::Mat::zeros(cv::Size(1920, 1080), CV_8UC3);
+
+    int nfeatures = 8000;
+    float orbScaleFactor = 1.2f;
+    int nlevels = 18;
+    int edgeThreshold = 4;
+    int firstLevel = 0;
+    int WTA_K = 2;
+    ORB::ScoreType scoreType = cv::ORB::HARRIS_SCORE;
+    int patchSize = 47;
+    int fastThreshold = 20;
+
+    Ptr<ORB> orb = cv::ORB::create(nfeatures, orbScaleFactor, nlevels, edgeThreshold, firstLevel, WTA_K, scoreType, patchSize, fastThreshold);
+
+    std::vector<cv::KeyPoint> keypoints;
+    cv::Mat descriptors;
+
+    cv::KeyPoint kp;
+    kp.pt.x = 443;
+    kp.pt.y = 5;
+    kp.size = 47;
+    kp.angle = 53.4580612f;
+    kp.response = 0.0000470733867f;
+    kp.octave = 0;
+    kp.class_id = -1;
+
+    keypoints.push_back(kp);
+
+    ASSERT_NO_THROW(orb->compute(image, keypoints, descriptors));
+}
+
+
+TEST(Features2D_ORB, regression_16197)
+{
+    Mat img(Size(72, 72), CV_8UC1, Scalar::all(0));
+    Ptr<ORB> orbPtr = ORB::create();
+    orbPtr->setNLevels(5);
+    orbPtr->setFirstLevel(3);
+    orbPtr->setScaleFactor(1.8);
+    orbPtr->setPatchSize(8);
+    orbPtr->setEdgeThreshold(8);
+
+    std::vector<KeyPoint> kps;
+    Mat fv;
+
+    // exception in debug mode, crash in release
+    ASSERT_NO_THROW(orbPtr->detectAndCompute(img, noArray(), kps, fv));
+}
+
+
+}} // namespace

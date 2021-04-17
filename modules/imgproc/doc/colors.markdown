@@ -56,7 +56,10 @@ scaled to fit the 0 to 1 range.
 
 \f[V  \leftarrow max(R,G,B)\f]
 \f[S  \leftarrow \fork{\frac{V-min(R,G,B)}{V}}{if \(V \neq 0\)}{0}{otherwise}\f]
-\f[H  \leftarrow \forkthree{{60(G - B)}/{(V-min(R,G,B))}}{if \(V=R\)}{{120+60(B - R)}/{(V-min(R,G,B))}}{if \(V=G\)}{{240+60(R - G)}/{(V-min(R,G,B))}}{if \(V=B\)}\f]
+\f[H  \leftarrow \forkfour{{60(G - B)}/{(V-min(R,G,B))}}{if \(V=R\)}
+  {{120+60(B - R)}/{(V-min(R,G,B))}}{if \(V=G\)}
+  {{240+60(R - G)}/{(V-min(R,G,B))}}{if \(V=B\)}
+  {0}{if  \(R=G=B\)}\f]
 If \f$H<0\f$ then \f$H \leftarrow H+360\f$ . On output \f$0 \leq V \leq 1\f$, \f$0 \leq S \leq 1\f$,
 \f$0 \leq H \leq 360\f$ .
 
@@ -78,9 +81,10 @@ scaled to fit the 0 to 1 range.
 \f[L  \leftarrow \frac{V_{max} + V_{min}}{2}\f]
 \f[S  \leftarrow \fork { \frac{V_{max} - V_{min}}{V_{max} + V_{min}} }{if  \(L < 0.5\) }
     { \frac{V_{max} - V_{min}}{2 - (V_{max} + V_{min})} }{if  \(L \ge 0.5\) }\f]
-\f[H  \leftarrow \forkthree {{60(G - B)}/{(V_{max}-V_{min})}}{if  \(V_{max}=R\) }
+\f[H  \leftarrow \forkfour {{60(G - B)}/{(V_{max}-V_{min})}}{if  \(V_{max}=R\) }
   {{120+60(B - R)}/{(V_{max}-V_{min})}}{if  \(V_{max}=G\) }
-  {{240+60(R - G)}/{(V_{max}-V_{min})}}{if  \(V_{max}=B\) }\f]
+  {{240+60(R - G)}/{(V_{max}-V_{min})}}{if  \(V_{max}=B\) }
+  {0}{if  \(R=G=B\) }\f]
 If \f$H<0\f$ then \f$H \leftarrow H+360\f$ . On output \f$0 \leq L \leq 1\f$, \f$0 \leq S \leq
 1\f$, \f$0 \leq H \leq 360\f$ .
 
@@ -123,7 +127,7 @@ In case of 8-bit and 16-bit images, R, G, and B are converted to the floating-po
 scaled to fit 0 to 1 range.
 
 \f[\vecthree{X}{Y}{Z} \leftarrow \vecthreethree{0.412453}{0.357580}{0.180423}{0.212671}{0.715160}{0.072169}{0.019334}{0.119193}{0.950227} \cdot \vecthree{R}{G}{B}\f]
-\f[L  \leftarrow \fork{116 Y^{1/3}}{for \(Y>0.008856\)}{903.3 Y}{for \(Y\leq 0.008856\)}\f]
+\f[L  \leftarrow \fork{116*Y^{1/3} - 16}{for \(Y>0.008856\)}{903.3 Y}{for \(Y\leq 0.008856\)}\f]
 \f[u'  \leftarrow 4*X/(X + 15*Y + 3 Z)\f]
 \f[v'  \leftarrow 9*Y/(X + 15*Y + 3 Z)\f]
 \f[u  \leftarrow 13*L*(u' - u_n)  \quad \text{where} \quad u_n=0.19793943\f]
@@ -135,6 +139,8 @@ The values are then converted to the destination data type:
 -   8-bit images:  \f$L  \leftarrow 255/100 L, \; u  \leftarrow 255/354 (u + 134), \; v  \leftarrow 255/262 (v + 140)\f$
 -   16-bit images:   (currently not supported)
 -   32-bit images:   L, u, and v are left as is
+
+Note that when converting integer Luv images to RGB the intermediate X, Y and Z values are truncated to \f$ [0, 2] \f$ range to fit white point limitations. It may lead to incorrect representation of colors with odd XYZ values.
 
 The above formulae for converting RGB to/from various color spaces have been taken from multiple
 sources on the web, primarily from the Charles Poynton site <http://www.poynton.com/ColorFAQ.html>
